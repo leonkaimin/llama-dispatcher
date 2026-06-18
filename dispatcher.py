@@ -103,12 +103,14 @@ class Backend:
     service: str | None = None
     idle_check: bool = False
     auto_candidate: bool = False
+    stop_after_request: bool = False
     default: bool = False
     priority: int = 100
     gpu_util_limit: int = PC_GPU_UTIL_LIMIT
     gpu_mem_limit_mb: int = PC_GPU_MEM_LIMIT_MB
     idle_cache_seconds: float = PC_IDLE_CACHE_SECONDS
     ready_timeout_seconds: float = PC_READY_TIMEOUT_SECONDS
+    stop_timeout_seconds: float = 15
 
 
 @dataclass
@@ -136,12 +138,14 @@ def parse_backend(item: dict[str, Any]) -> Backend:
         service=item.get("service"),
         idle_check=bool(item.get("idle_check", False)),
         auto_candidate=bool(item.get("auto_candidate", False)),
+        stop_after_request=bool(item.get("stop_after_request", False)),
         default=bool(item.get("default", False)),
         priority=int(item.get("priority", 100)),
         gpu_util_limit=int(item.get("gpu_util_limit", PC_GPU_UTIL_LIMIT)),
         gpu_mem_limit_mb=int(item.get("gpu_mem_limit_mb", PC_GPU_MEM_LIMIT_MB)),
         idle_cache_seconds=float(item.get("idle_cache_seconds", PC_IDLE_CACHE_SECONDS)),
         ready_timeout_seconds=float(item.get("ready_timeout_seconds", PC_READY_TIMEOUT_SECONDS)),
+        stop_timeout_seconds=float(item.get("stop_timeout_seconds", 15)),
     )
 
 
@@ -164,6 +168,7 @@ def default_backends() -> list[Backend]:
             service=PC_SERVICE,
             idle_check=True,
             auto_candidate=True,
+            stop_after_request=True,
             priority=10,
         ),
     ]
@@ -356,6 +361,31 @@ async def ensure_backend_ready(backend: Backend) -> tuple[bool, str]:
     return False, f"{backend.id}_ready_timeout"
 
 
+async def stop_backend_after_request(backend: Backend, reason: str) -> None:
+    if not backend.stop_after_request or not backend.service or not backend.ssh:
+        return
+
+    service = shlex.quote(backend.service)
+    code, _, stderr = await run_ssh(
+        backend,
+        f"sudo systemctl stop {service}",
+        timeout=backend.stop_timeout_seconds,
+    )
+    logger.info(
+        json.dumps(
+            {
+                "route": backend.id,
+                "action": "stop_service",
+                "service": backend.service,
+                "ok": code == 0,
+                "reason": reason,
+                "error": stderr.strip() or None,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
 def backend_for_requested_model(requested_model: str) -> Backend | None:
     matches: list[tuple[int, Backend]] = []
     for backend in BACKENDS:
@@ -485,6 +515,7 @@ async def stream_with_optional_fallback(
     pc_idle: bool | None,
 ):
     yielded = False
+    stopped = False
     try:
         async for chunk in stream_upstream(
             route.base,
@@ -496,6 +527,8 @@ async def stream_with_optional_fallback(
             yield chunk
     except httpx.HTTPError as exc:
         if route != DEFAULT_BACKEND and not yielded:
+            await stop_backend_after_request(route, "stream_failed_before_fallback")
+            stopped = True
             fallback_payload = dict(primary_payload)
             fallback_payload["model"] = DEFAULT_BACKEND.model
             route_log(DEFAULT_BACKEND, True, pc_idle, f"{route.id}_stream_failed_fallback")
@@ -504,6 +537,9 @@ async def stream_with_optional_fallback(
             return
         error = {"error": {"message": str(exc), "type": "upstream_stream_error"}}
         yield f"data: {json.dumps(error, ensure_ascii=False)}\n\n".encode()
+    finally:
+        if not stopped:
+            await stop_backend_after_request(route, "stream_complete")
 
 
 @app.get("/health")
@@ -520,6 +556,7 @@ async def health() -> dict[str, Any]:
                 "default": backend.default,
                 "auto_candidate": backend.auto_candidate,
                 "idle_check": backend.idle_check,
+                "stop_after_request": backend.stop_after_request,
             }
             for backend in BACKENDS
         ],
@@ -557,6 +594,7 @@ async def chat_completions(request: Request) -> Response:
     selected_payload = dict(original_payload)
     selected_payload["model"] = route.model
     route_log(route, stream, pc_idle, reason)
+    stopped = False
 
     if stream:
         return StreamingResponse(
@@ -578,6 +616,8 @@ async def chat_completions(request: Request) -> Response:
                 {"error": {"message": str(exc), "type": "default_upstream_error"}},
                 status_code=502,
             )
+        await stop_backend_after_request(route, "request_failed_before_fallback")
+        stopped = True
         selected_payload = dict(original_payload)
         selected_payload["model"] = DEFAULT_BACKEND.model
         route_log(DEFAULT_BACKEND, stream, pc_idle, f"{route.id}_request_failed_fallback")
@@ -588,6 +628,9 @@ async def chat_completions(request: Request) -> Response:
                 {"error": {"message": str(default_exc), "type": "default_upstream_error"}},
                 status_code=502,
             )
+
+    if not stopped:
+        await stop_backend_after_request(route, "request_complete")
 
     return Response(
         content=response.content,

@@ -121,6 +121,8 @@ Config shape:
       "service": "llama-worker.service",
       "idle_check": true,
       "auto_candidate": true,
+      "stop_after_request": true,
+      "stop_timeout_seconds": 15,
       "priority": 10
     }
   ]
@@ -139,6 +141,10 @@ ssh              SSH target for cold-start and idle checks
 service          systemd service to start over SSH when not alive
 idle_check       whether to check process list and nvidia-smi before use
 auto_candidate   whether auto-local may route to this backend
+stop_after_request
+                 whether to stop the backend service after each LLM request
+stop_timeout_seconds
+                 how long to wait for the stop command
 priority         lower number is tried first for auto-local
 ```
 
@@ -161,6 +167,14 @@ nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits
 ```
 
 A worker is busy if a configured busy process is present, GPU utilization is over the limit, or GPU memory is over the limit.
+
+If `stop_after_request=true`, the dispatcher also runs this after a worker LLM request finishes:
+
+```bash
+ssh USER@WORKER_HOST_OR_IP 'sudo systemctl stop llama-worker.service'
+```
+
+This is useful when the same GPU should be freed for image generation after an LLM request. It runs after non-streaming responses complete, after streaming responses finish, and before fallback if the worker request fails before producing output.
 
 ## Test
 

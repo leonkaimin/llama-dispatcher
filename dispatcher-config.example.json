@@ -31,6 +31,8 @@
       "service": "llama-worker.service",
       "idle_check": true,
       "auto_candidate": true,
+      "stop_after_request": true,
+      "stop_timeout_seconds": 15,
       "priority": 10
     }
   ]
