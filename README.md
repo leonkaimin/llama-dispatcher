@@ -29,7 +29,7 @@ Do not commit your real `dispatcher-config.json`; it may contain private IPs, SS
 For a user-local checkout:
 
 ```bash
-git clone https://github.com/YOUR_ORG/local-llm-dispatcher.git
+git clone https://github.com/leonkaimin/local-llm-dispatcher.git
 cd local-llm-dispatcher
 python3 -m venv .venv
 . .venv/bin/activate
