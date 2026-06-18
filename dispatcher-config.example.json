@@ -1,0 +1,37 @@
+{
+  "http": {
+    "request_timeout_seconds": 1800,
+    "connect_timeout_seconds": 10
+  },
+  "routing": {
+    "short_prompt_char_limit": 500,
+    "long_prompt_char_limit": 60000,
+    "gpu_util_limit": 30,
+    "gpu_mem_limit_mb": 6000,
+    "idle_cache_seconds": 10,
+    "ready_timeout_seconds": 45,
+    "busy_process_pattern": "(ComfyUI|Wan|flux|sdxl|diffusers|torchrun|python.*main\\.py|python.*infer)",
+    "auto_default_hint_pattern": "(long context|compact|full repo|codebase|whole repo|entire repo|many files|大量檔案|大量文件|整個 repo|整個專案|完整專案|壓縮上下文)"
+  },
+  "backends": [
+    {
+      "id": "main",
+      "base": "http://127.0.0.1:8080/v1",
+      "model": "main-model",
+      "prefixes": ["main"],
+      "default": true,
+      "priority": 0
+    },
+    {
+      "id": "worker",
+      "base": "http://WORKER_HOST_OR_IP:8081/v1",
+      "model": "worker-model",
+      "prefixes": ["worker"],
+      "ssh": "USER@WORKER_HOST_OR_IP",
+      "service": "llama-worker.service",
+      "idle_check": true,
+      "auto_candidate": true,
+      "priority": 10
+    }
+  ]
+}
